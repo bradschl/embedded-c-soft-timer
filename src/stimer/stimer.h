@@ -98,8 +98,10 @@ stimer_free_context(struct stimer_ctx * ctx);
 /**
  * @brief Periodic call to drive all of the timers
  * @details This must be called periodically to increment the timers. This must
- *          be called at a rate at least 4 times higher than the get_time_fn
- *          value rollover
+ *          be called at a rate at least 4 times faster than the get_time_fn
+ *          value rollover. Optionally, this can be skipped if you know that
+ *          all timers in use are periodically checked at least 4 times faster
+ *          the get_time_fn value rollover
  *
  * @param ctx Timer context to execute
  */

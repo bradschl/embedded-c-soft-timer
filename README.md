@@ -21,20 +21,23 @@ get_current_time(void * hint)
     // Timer is 1us resolution. The hardware counts down from the maximum
     // value, so the raw value needs to be flipped to be compatible with the
     // software timer
-    return Timer_1_INIT_PERIOD - Timer_1_ReadCounter();
+    return Timer_1_PERIOD - Timer_1_ReadCounter();
+
+    // If the hardware timer counts up, then no flip is needed
+    // return Timer_1_ReadCounter();
 }
 
 
 int
 main()
 {
-    // Create the timer context, 1000000ns per Timer_1 tick, maximum value
-    // returned by get_current_timer is Timer_1_INIT_PERIOD
+    // Create the timer context, 1us (1000ns) per Timer_1 tick, maximum value
+    // returned by get_current_timer is Timer_1_PERIOD
     struct stimer_ctx * timer_ctx = 
         stimer_alloc_context(NULL, 
                              get_current_time,
-                             Timer_1_INIT_PERIOD,
-                             1000000);
+                             Timer_1_PERIOD,
+                             1000);
     ASSERT_NOT_NULL(timer_ctx);
 
 
@@ -49,6 +52,7 @@ main()
     for(;;) {
         // Periodically execute the timer context to drive the
         // internal timer rollover logic
+        // This call is not strictly required, see stimer.h
         stimer_execute_context(timer_ctx);
 
         /* ...  */

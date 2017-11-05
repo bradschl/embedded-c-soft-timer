@@ -69,7 +69,71 @@ struct stimer_ctx {
 
 // ---------------------------------------------------------- Private functions
 
-// ------------ Timer linking functions
+// ------------ Time duration functions
+
+static inline void
+advance_duration_ns(struct stimer_duration * td, uint32_t ns_advance)
+{
+    // Need to be really careful about overflows in here, hence strange math
+    uint32_t headroom = 1000000000u - td->nanoseconds;
+
+    if (ns_advance < headroom) {
+        td->nanoseconds += ns_advance;
+    } else {
+        td->seconds += 1;
+        td->nanoseconds = ns_advance - headroom;
+    }
+}
+
+
+static inline bool
+is_duration_ge(struct stimer_duration * lhs, struct stimer_duration * rhs)
+{
+    bool is_ge = false;
+    if (lhs->seconds > rhs->seconds) {
+        is_ge = true;
+    } else if (lhs->seconds == rhs->seconds) {
+        if (lhs->nanoseconds >= rhs->nanoseconds) {
+            is_ge = true;
+        }
+    }
+    return is_ge;
+}
+
+
+static inline void
+set_duration_s(struct stimer_duration * td, uint32_t s)
+{
+    td->seconds = s;
+    td->nanoseconds = 0;
+}
+
+
+static inline void
+set_duration_ms(struct stimer_duration * td, uint32_t ms)
+{
+    td->seconds = ms / 1000;
+    td->nanoseconds = (ms % 1000) * 1000000;
+}
+
+
+static inline void
+set_duration_us(struct stimer_duration * td, uint32_t us)
+{
+    td->seconds = us / 1000000;
+    td->nanoseconds = (us % 1000000) * 1000;
+}
+
+
+static inline void
+set_duration_ns(struct stimer_duration * td, uint32_t ns)
+{
+    td->seconds = ns / 1000000000;
+    td->nanoseconds = ns % 1000000000;
+}
+
+
+// -------------------- Timer functions
 
 static void
 link_timer(struct stimer_ctx * ctx, struct stimer * ts)
@@ -110,31 +174,14 @@ unlink_timer(struct stimer * ts)
 }
 
 
-// --------------- Timer math functions
-
 static inline void
-advance_timer_duration(struct stimer_duration * td, uint32_t ns_advance)
-{
-    // Need to be really careful about overflows in here, hence strange math
-    uint32_t headroom = 1000000000u - td->nanoseconds;
-
-    if (ns_advance < headroom) {
-        td->nanoseconds += ns_advance;
-    } else {
-        td->seconds += 1;
-        td->nanoseconds = ns_advance - headroom;
-    }
-}
-
-
-static inline void
-advance_and_checkpoint(struct stimer * ts, struct tm_math * tm, uint32_t now)
+checkpoint_timer(struct stimer * ts, struct tm_math * tm, uint32_t now)
 {
     if (ts->is_running) {
         int32_t diff = tm_get_diff(tm, now, ts->checkpoint);
         if (diff > 0) {
             uint32_t ns_advance = diff * ts->ctx->ns_per_count;
-            advance_timer_duration(&ts->elapsed, ns_advance);
+            advance_duration_ns(&ts->elapsed, ns_advance);
             ts->checkpoint = now;
         }
     }
@@ -142,43 +189,42 @@ advance_and_checkpoint(struct stimer * ts, struct tm_math * tm, uint32_t now)
 
 
 static inline void
-advance_and_checkpoint_2(struct stimer * ts)
+checkpoint_timer_2(struct stimer * ts)
 {
-    if (NULL != ts->ctx) {
+    if (ts->is_running) {
         struct stimer_ctx * ctx = ts->ctx;
         uint32_t now = ctx->get_time_fn(ctx->hint);
-        advance_and_checkpoint(ts, &ctx->tm, now);
+        checkpoint_timer(ts, &ctx->tm, now);
     }
 }
 
-
-// ------------- Expire timer functions
 
 static inline void
 start_and_checkpoint_timer(struct stimer * ts)
 {
-    if (NULL != ts->ctx) {
-        ts->checkpoint = ts->ctx->get_time_fn(ts->ctx->hint);
-        ts->is_running = true;
+    ts->checkpoint = ts->ctx->get_time_fn(ts->ctx->hint);
+    ts->is_running = true;
 
-        ts->elapsed.seconds = 0;
-        ts->elapsed.nanoseconds = 0;
-    }
+    ts->elapsed.seconds = 0;
+    ts->elapsed.nanoseconds = 0;
 }
 
 
-static inline bool
-timer_duration_ge(struct stimer_duration * lhs, struct stimer_duration * rhs)
+static inline void
+timer_subtract_from_elapsed(struct stimer * ts, struct stimer_duration * td)
 {
-    bool is_ge = false;
-    if (lhs->seconds > rhs->seconds) {
-        is_ge = true;
-    } else if (lhs->seconds == rhs->seconds) {
-        if (lhs->nanoseconds >= rhs->nanoseconds) {
-            is_ge = true;
+    if (is_duration_ge(&ts->elapsed, td)) {
+        ts->elapsed.seconds -= td->seconds;
+        if (ts->elapsed.nanoseconds >= td->nanoseconds) {
+            ts->elapsed.nanoseconds -= td->nanoseconds;
+        } else {
+            ts->elapsed.seconds -= 1;
+            ts->elapsed.nanoseconds += (1000000000 - td->nanoseconds);
         }
+    } else {
+        ts->elapsed.seconds = 0;
+        ts->elapsed.nanoseconds = 0;
     }
-    return is_ge;
 }
 
 
@@ -229,7 +275,7 @@ stimer_execute_context(struct stimer_ctx * ctx)
 
         struct stimer * ts;
         for (ts = ctx->root; NULL != ts; ts = ts->next) {
-            advance_and_checkpoint(ts, &ctx->tm, now);
+            checkpoint_timer(ts, &ctx->tm, now);
         }
     }
 }
@@ -280,7 +326,7 @@ stimer_free(struct stimer * ts)
 void
 stimer_start(struct stimer * ts)
 {
-    if (NULL != ts) {
+    if ((NULL != ts) && (NULL != ts->ctx)) {
         start_and_checkpoint_timer(ts);
     }
 }
@@ -291,10 +337,7 @@ stimer_stop(struct stimer * ts)
 {
     if ((NULL != ts) && (NULL != ts->ctx)) {
         if (ts->is_running) {
-            struct stimer_ctx * ctx = ts->ctx;
-            uint32_t now = ctx->get_time_fn(ctx->hint);
-
-            advance_and_checkpoint(ts, &ctx->tm, now);
+            checkpoint_timer_2(ts);
             ts->is_running = false;
         }
     }
@@ -304,12 +347,9 @@ stimer_stop(struct stimer * ts)
 void
 stimer_get_elapsed_time(struct stimer * ts, struct stimer_duration * t)
 {
-    if (NULL != ts) {
-        if ((ts->is_running) && (NULL != ts->ctx)) {
-            struct stimer_ctx * ctx = ts->ctx;
-            uint32_t now = ctx->get_time_fn(ctx->hint);
-
-            advance_and_checkpoint(ts, &ctx->tm, now);
+    if ((NULL != ts) && (NULL != t)) {
+        if (NULL != ts->ctx) {
+            checkpoint_timer_2(ts);
         }
 
         *t = ts->elapsed;
@@ -322,7 +362,7 @@ stimer_get_elapsed_time(struct stimer * ts, struct stimer_duration * t)
 void
 stimer_expire_from_now(struct stimer * ts, struct stimer_duration * t)
 {
-    if ((NULL != ts) && (NULL != t)) {
+    if ((NULL != ts) && (NULL != ts->ctx) && (NULL != t)) {
         start_and_checkpoint_timer(ts);
         ts->expire_interval = *t;
     }
@@ -332,10 +372,9 @@ stimer_expire_from_now(struct stimer * ts, struct stimer_duration * t)
 void
 stimer_expire_from_now_s(struct stimer * ts, uint32_t s)
 {
-    if (NULL != ts) {
+    if ((NULL != ts) && (NULL != ts->ctx)) {
         start_and_checkpoint_timer(ts);
-        ts->expire_interval.seconds = s;
-        ts->expire_interval.nanoseconds = 0;
+        set_duration_s(&ts->expire_interval, s);
     }
 }
 
@@ -343,10 +382,9 @@ stimer_expire_from_now_s(struct stimer * ts, uint32_t s)
 void
 stimer_expire_from_now_ms(struct stimer * ts, uint32_t ms)
 {
-    if (NULL != ts) {
+    if ((NULL != ts) && (NULL != ts->ctx)) {
         start_and_checkpoint_timer(ts);
-        ts->expire_interval.seconds = ms / 1000;
-        ts->expire_interval.nanoseconds = (ms % 1000) * 1000000;
+        set_duration_ms(&ts->expire_interval, ms);
     }
 }
 
@@ -354,10 +392,9 @@ stimer_expire_from_now_ms(struct stimer * ts, uint32_t ms)
 void
 stimer_expire_from_now_us(struct stimer * ts, uint32_t us)
 {
-    if (NULL != ts) {
+    if ((NULL != ts) && (NULL != ts->ctx)) {
         start_and_checkpoint_timer(ts);
-        ts->expire_interval.seconds = us / 1000000;
-        ts->expire_interval.nanoseconds = (us % 1000000) * 1000;
+        set_duration_us(&ts->expire_interval, us);
     }
 }
 
@@ -365,10 +402,9 @@ stimer_expire_from_now_us(struct stimer * ts, uint32_t us)
 void
 stimer_expire_from_now_ns(struct stimer * ts, uint32_t ns)
 {
-    if (NULL != ts) {
+    if ((NULL != ts) && (NULL != ts->ctx)) {
         start_and_checkpoint_timer(ts);
-        ts->expire_interval.seconds = ns / 1000000000;
-        ts->expire_interval.nanoseconds = ns % 1000000000;
+        set_duration_ns(&ts->expire_interval, ns);
     }
 }
 
@@ -378,8 +414,10 @@ stimer_is_expired(struct stimer * ts)
 {
     bool expired = false;
     if (NULL != ts) {
-        advance_and_checkpoint_2(ts);
-        expired = timer_duration_ge(&ts->elapsed, &ts->expire_interval);
+        if (NULL != ts->ctx) {
+            checkpoint_timer_2(ts);
+        }
+        expired = is_duration_ge(&ts->elapsed, &ts->expire_interval);
     }
     return expired;
 }
@@ -388,7 +426,7 @@ stimer_is_expired(struct stimer * ts)
 void
 stimer_restart_from_now(struct stimer * ts)
 {
-    if ((NULL != ts) && (ts->is_running)) {
+    if ((NULL != ts) && (NULL != ts->ctx) && (ts->is_running)) {
         start_and_checkpoint_timer(ts);
     }
 }
@@ -397,20 +435,8 @@ stimer_restart_from_now(struct stimer * ts)
 void
 stimer_advance(struct stimer * ts)
 {
-    if ((NULL != ts) && (ts->is_running)) {
-        advance_and_checkpoint_2(ts);
-
-        if (timer_duration_ge(&ts->elapsed, &ts->expire_interval)) {
-            ts->elapsed.seconds -= ts->expire_interval.seconds;
-            if (ts->elapsed.nanoseconds >= ts->expire_interval.nanoseconds) {
-                ts->elapsed.nanoseconds -= ts->expire_interval.nanoseconds;
-            } else {
-                ts->elapsed.seconds -= 1;
-                ts->elapsed.nanoseconds += (1000000000 - ts->expire_interval.nanoseconds);
-            }
-        } else {
-            ts->elapsed.seconds = 0;
-            ts->elapsed.nanoseconds = 0;
-        }
+    if ((NULL != ts) && (NULL != ts->ctx) && (ts->is_running)) {
+        checkpoint_timer_2(ts);
+        timer_subtract_from_elapsed(ts, &ts->expire_interval);
     }
 }

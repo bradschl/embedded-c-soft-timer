@@ -3,7 +3,7 @@
     "description": "Embedded (bare metal) C software timer library",
     "repo": "bradschl/embedded-c-soft-timer",
     "license": "MIT",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "src": [
         "src/stimer/stimer.c",
         "src/stimer/stimer.h"
