@@ -47,7 +47,7 @@ $(call BEGIN_UNIVERSAL_BUILD)
 
   $(call ADD_C_INCLUDE,         src)
   $(call BUILD_SOURCE,          $(stimer_SRC))
-  $(call MAKE_LIRARY,           stimer)
+  $(call MAKE_LIBRARY,          stimer)
 
   $(call EXPORT_SHALLOW_DEPS,   stimer)
 
@@ -62,7 +62,7 @@ $(call BEGIN_UNIVERSAL_BUILD)
   
   CF := -Wno-unused-variable
   $(call BUILD_SOURCE,          $(deps_SRC))
-  $(call MAKE_LIRARY,           deps)
+  $(call MAKE_LIBRARY,          deps)
 
   $(call EXPORT_SHALLOW_DEPS,   deps)
 $(call END_UNIVERSAL_BUILD)
